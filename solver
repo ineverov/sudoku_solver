@@ -1,0 +1,292 @@
+#!/usr/bin/env ruby
+
+require 'colorize'
+
+class Cell
+  attr_reader :options, :value, :row, :column, :square
+
+  class << self
+    def index
+      @index ||= -1
+      @index += 1
+    end
+  end
+  def initialize(game, val = nil)
+    @options = (1..9).to_a
+    @game = game
+    @index = self.class.index
+    @row = @index / 9
+    @column = @index % 9
+    @square = find_square
+    set_value val if val
+  end
+
+  private def find_square
+    @row / 3 * 3 + @column / 3
+  end
+
+  def delete_options(options = [])
+    @options -= options
+    validate!
+    @game.print(true) if @game.started?
+  end
+
+  def validate!
+    if @value.nil? && @options.empty?
+      raise "Invalid cell #{@index} in row# #{@row}, column#{@column}, square# #{@square}"
+    end
+  end
+
+  def shrink!
+    return if options.size > 1 || @value
+    set_value(options.first)
+  end
+
+  def set_value(v)
+    old_value = @value
+    @value = v
+    @options = []
+    if old_value != v && @game.started?
+      @game.print(true)
+      @game.notify(@row, @column, @square)
+    end
+  end
+
+  def to_s(details = false)
+    if details
+      if @value
+        [
+          '   ',
+          " #{@value.to_s.green} ",
+          '   '
+        ]
+      else
+        3.times.map do |i|
+          3.times.map do |j|
+            if @options.index(3*i + j + 1)
+              (3*i + j + 1).to_s
+            else
+              ' '
+            end
+          end.join
+        end
+      end
+    else
+      @value ? @value.to_s : ' '
+    end
+  end
+end
+
+class Row
+  attr_reader :cells
+  class << self
+    def index
+      @index ||= 0
+      @index += 1
+    end
+  end
+  def initialize(cells)
+    @index = self.class.index
+    @cells = cells
+  end
+
+  def solved?
+    @cells.all?(&:value)
+  end
+
+  def delete(options = [])
+    @cells.each { |c| c.delete_options(options) }
+  end
+
+  def reduce_options
+    cells.each do |c|
+      next unless c.value
+      cells.each { |c1| c1.delete_options([c.value]) }
+    end
+    shrink!
+  end
+
+  def shrink!
+    @cells.each(&:shrink!)
+    validate!
+  end
+
+  def validate!
+    values = @cells.map(&:value).compact
+    if values != values.uniq
+      raise "Last step leads to duplicates in #{self.class}##{@index}"
+    end
+  end
+
+  def find_uniq!
+    counts = (1..9).to_a.inject({}) {|h, v| h[v] = 0; h }
+    @cells.each do |c|
+      next if c.value
+      c.options.each do |v|
+        counts[v] += 1
+      end
+    end
+    counts.select { |c, v| v == 1 }.map { |k,v| k }.each do |uniq|
+      reduce_options
+      cell = @cells.find { |c| c.options.include?(uniq) }
+      next unless cell
+      cell.set_value(uniq)
+    end
+  rescue StandardError => e
+    puts "Error in #{self.class} # #{@index}"
+    puts to_s(true)
+    raise e
+  end
+
+  def all_groups
+    groups(2)
+    groups(3)
+  end
+
+  def groups(n = 2)
+    groups = {}
+    @cells.each do |c|
+      next unless c.options.size == n
+      groups[c.options] ||= 0
+      groups[c.options] += 1
+    end
+
+    groups.select { |p, c| c == n }.each do |group, _count|
+      @cells.select { |c| c.options != group }.each {|c| c.delete_options(group) }
+    end
+  end
+
+  def to_s(details = false)
+    values = @cells.map { |c| c.to_s(details) }
+    if details
+      3.times.map do |i|
+        values.map {|c| c[i] }.join('|')
+      end.join("\n")
+    else
+      values.join('')
+    end
+  end
+  alias :inspect :to_s
+end
+
+class Column < Row
+end
+
+class Square < Row
+end
+
+class Game
+  def initialize(values, verbose = false)
+    raise "Invalid input: Given #{values.size} values. Expecting 81" if values.size != 81
+
+    @verbose = verbose
+    @cells = values.map { |v| Cell.new(self, v) }
+    @rows = 9.times.map { |i| Row.new(@cells[i*9...(i+1)*9]) }
+    @columns = 9.times.map do |i|
+      vals = 9.times.map {|j| @cells[i + j*9] }
+      Column.new(vals)
+    end
+
+    @squares = []
+    3.times do |a|
+      3.times do |b|
+        vals = []
+        3.times.map do |i|
+          3.times.map do |j|
+            vals << @cells[a*27 + b*3 + i*9 + j]
+          end
+        end
+        @squares << Square.new(vals)
+      end
+    end
+  end
+
+  def notify(row, col, square)
+    do_row(@rows[row]) unless @rows[row].solved?
+    do_column(@columns[col]) unless @columns[col].solved?
+    do_square(@squares[square]) unless @squares[square].solved?
+  end
+
+  def shrink!
+    @cells.each do |c|
+      c.shrink!
+    end
+  end
+
+  def do_row(r)
+    r.reduce_options
+    r.find_uniq!
+    r.all_groups
+  end
+
+  def do_column(c)
+    c.reduce_options
+    c.find_uniq!
+    c.all_groups
+  end
+
+  def do_square(s)
+    s.reduce_options
+    s.find_uniq!
+    s.all_groups
+  end
+
+  def step
+    9.times do |i|
+      do_row(@rows[i])
+      return if solved?
+
+      do_column(@columns[i])
+      return if solved?
+
+      do_square(@squares[i])
+      return if solved?
+    end
+  end
+
+  def print(details = false)
+    @i ||= 0
+    @i += 1
+    return unless @verbose
+    puts "\e[H\e[2J"
+    puts "Iteration #{@i}\n"
+    @rows.each { |r| puts(r.to_s(details)); details ? puts('-'*35) : nil }
+  end
+
+  def solved?
+    @cells.all?(&:value)
+  end
+
+  def started?
+    @started
+  end
+
+  def start!
+    @started = true
+    20.times do |i|
+      step
+      break if solved?
+    end
+
+    puts "\e[H\e[2J"
+    puts "Solved in #{@i} steps"
+    puts "Result:"
+    @verbose = 1
+    print(true)
+  end
+end
+
+if ARGV[0]
+  filename = ARGV[0]
+else
+  print 'Enter filename: '
+  filename = gets.strip
+end
+
+f = File.read(filename)
+values = f.gsub(/\n/, '').chars
+values = values.map {|v| v == ' ' ? nil : v.to_i }
+
+g = Game.new(values, ARGV[1])
+g.print(true)
+g.start!
